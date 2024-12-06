@@ -1,34 +1,56 @@
 import datetime
-import requests
 import json
-import os
 import sys
+from urllib import request, parse
+from http.client import HTTPResponse
+from subprocess import run
 
-def sunriseSunsetGet(lat_value,lon_value):
-    status = False
-    url = "https://api.sunrise-sunset.org/json?lat=" + lat_value + "&lng=" + lon_value + "&date=today&formatted=0"
-    response = requests.get(url)
-    if response.ok:
-        status = True
-    else:
-        status = False
-    return response.content,status
+def sunrise_sunset_get(lat_value: str, lon_value: str) -> tuple[dict, bool]:
+    base_url = "https://api.sunrise-sunset.org/json"
+    query_params = parse.urlencode({
+        "lat": lat_value,
+        "lng": lon_value,
+        "date": "today",
+        "formatted": 0
+    })
+    url = f"{base_url}?{query_params}"
+    
+    try:
+        with request.urlopen(url) as response:
+            if response.status == 200:
+                data = json.load(response)
+                return data, True
+            else:
+                return {}, False
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return {}, False
 
-def sunriseSunsetProcessing(lat_value,lon_value):
-    current_time = datetime.datetime.now()
-    raw_data, req_status = sunriseSunsetGet(lat_value,lon_value)
+def publish_message(topic: str, message: str) -> None:
+    run(["mosquitto_pub", "-h", "127.0.0.1", "-t", topic, "-m", message], check=True)
+
+def sunrise_sunset_processing(lat_value: str, lon_value: str) -> None:
+    """Обработка данных о восходе и закате солнца."""
+    raw_data, req_status = sunrise_sunset_get(lat_value, lon_value)
     if req_status:
-        sunriseSunsetdata = json.loads(raw_data.decode('utf-8'))
-        print(sunriseSunsetdata)
-        sunrise = sunriseSunsetdata["results"]["sunrise"]
-        sunset = sunriseSunsetdata["results"]["sunset"]
-        os.system('mosquitto_pub -h 127.0.0.1 -t local_python/sunset_sunrise/sunrise -m ' +  sunrise)
-        os.system('mosquitto_pub -h 127.0.0.1 -t local_python/sunset_sunrise/sunset -m ' +  sunset)
-        os.system('mosquitto_pub -h 127.0.0.1 -t local_python/weather/StatusAstronomicalDataDownload -m ' + 'success')
+        try:
+            sunrise = raw_data["results"]["sunrise"]
+            sunset = raw_data["results"]["sunset"]
+            
+            publish_message("local_python/sunset_sunrise/sunrise", sunrise)
+            publish_message("local_python/sunset_sunrise/sunset", sunset)
+            publish_message("local_python/weather/StatusAstronomicalDataDownload", "success")
+        except KeyError as e:
+            print(f"Error processing data: {e}")
+            publish_message("local_python/weather/StatusAstronomicalDataDownload", "error")
     else:
-        os.system('mosquitto_pub -h 127.0.0.1 -t local_python/weather/StatusAstronomicalDataDownload -m ' + 'error')
+        publish_message("local_python/weather/StatusAstronomicalDataDownload", "error")
 
 if __name__ == '__main__':
-    latitude = str(sys.argv[1])
-    longitude = str(sys.argv[2])
-    sunriseSunsetProcessing(latitude,longitude)
+    if len(sys.argv) != 3:
+        print("Usage: python script.py <latitude> <longitude>")
+        sys.exit(1)
+    
+    latitude = sys.argv[1]
+    longitude = sys.argv[2]
+    sunrise_sunset_processing(latitude, longitude)
